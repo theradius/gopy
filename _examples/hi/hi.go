@@ -5,193 +5,113 @@
 // package hi exposes a few Go functions to be wrapped and used from Python.
 package hi
 
+
 import (
 	"fmt"
-
-	"github.com/go-python/gopy/_examples/cpkg"
-	"github.com/go-python/gopy/_examples/structs"
+	"math"
+	"sort"
 )
 
-const (
-	Version  = "0.1" // Version of this package
-	Universe = 42    // Universe is the fundamental constant of everything
-)
+type xy struct{ x, y []float64 }
 
-var (
-	Debug    = false                            // Debug switches between debug and prod
-	Anon     = Person{Age: 1, Name: "<nobody>"} // Anon is a default anonymous person
-	IntSlice = []int{1, 2}                      // A slice of ints
-	IntArray = [2]int{1, 2}                     // An array of ints
-)
+func (s *xy) Len() int           { return len(s.x) }
+func (s *xy) Less(i, j int) bool { return s.x[i] < s.x[j] }
+func (s *xy) Swap(i, j int) {
+	s.x[i], s.x[j] = s.x[j], s.x[i]
+	s.y[i], s.y[j] = s.y[j], s.y[i]
+}
+func (s *xy) XY(i int) (float64, float64) { return s.x[i], s.y[i] }
 
-// Hi prints hi from Go
-func Hi() {
-	cpkg.Hi()
+func interpolate2points(x0, y0, x1, y1 float64) func(float64) float64 {
+	return func(x float64) float64 {
+		if x1 == x0 {
+			return (y0 + y1) / 2.
+		}
+		return y0 + (x-x0)/(x1-x0)*(y1-y0)
+	}
 }
 
-// Hello prints a greeting from Go
-func Hello(s string) {
-	cpkg.Hello(s)
-}
+// Interp1d return linear interpolation from x,y points
+// mimics partly scipy.interpolate.interp1d
+func Interp1d(x, y []float64) func(x float64) float64 {
+	if len(x) < 2 || len(x) != len(y) {
+		panic(fmt.Errorf("interp1d lenx:%d leny:%d", len(x), len(y)))
+	}
 
-// Concat concatenates two strings together and returns the resulting string.
-func Concat(s1, s2 string) string {
-	return s1 + s2
-}
-
-// LookupQuestion returns question for given answer.
-func LookupQuestion(n int) (string, error) {
-	if n == 42 {
-		return "Life, the Universe and Everything", nil
+	var both *xy
+	if sort.Float64sAreSorted(x) {
+		both = &xy{x, y}
 	} else {
-		return "", fmt.Errorf("Wrong answer: %v != 42", n)
+		both = &xy{make([]float64, len(x)), make([]float64, len(x))}
+		copy(both.x, x)
+		copy(both.y, y)
+		sort.Sort(both)
+	}
+	return func(x float64) float64 {
+		ix := sort.SearchFloat64s(both.x, x) - 1
+		if ix < 0 {
+			ix = 0
+		}
+		if ix > len(both.x)-2 {
+			ix = len(both.x) - 2
+		}
+		ix1 := ix + 1
+		for ix > 0 && math.IsNaN(both.y[ix]) {
+			ix--
+		}
+		for ix1 < len(both.x)-1 && math.IsNaN(both.y[ix1]) {
+			ix1++
+		}
+		//fmt.Println(x, both.x, both.y, ix, ix1)
+		return interpolate2points(both.x[ix], both.y[ix], both.x[ix1], both.y[ix1])(x)
 	}
 }
 
-// Add returns the sum of its arguments.
-func Add(i, j int) int {
-	return i + j
+type xyz struct{ x, y, z []float64 }
+
+func (s *xyz) Len() int           { return len(s.x) }
+func (s *xyz) Less(i, j int) bool { return s.x[i] < s.x[j] || (s.x[i] == s.x[j] && s.y[i] < s.y[j]) }
+func (s *xyz) Swap(i, j int) {
+	s.x[i], s.x[j] = s.x[j], s.x[i]
+	s.y[i], s.y[j] = s.y[j], s.y[i]
+	s.z[i], s.z[j] = s.z[j], s.z[i]
 }
 
-// Person is a simple struct
-type Person struct {
-	Name string
-	Age  int
-}
-
-// NewPerson creates a new Person value
-func NewPerson(name string, age int) *Person {
-	return &Person{
-		Name: name,
-		Age:  age,
+// Interp2d computes bilinear interpolation from x,y to z
+func Interp2d(x, y, z []float64) func(x, y float64) float64 {
+	xsorted, ysorted, zsorted := make([]float64, len(x)), make([]float64, len(x)), make([]float64, len(x))
+	copy(xsorted, x)
+	copy(ysorted, y)
+	copy(zsorted, z)
+	all := &xyz{x: xsorted, y: ysorted, z: zsorted}
+	sort.Sort(all)
+	return func(x, y float64) float64 {
+		ix0 := 0
+		l := len(xsorted)
+		ix2 := l - 1
+		for i := range xsorted {
+			if xsorted[i] > xsorted[ix0] && xsorted[i] <= x && xsorted[i] <= xsorted[ix2] {
+				ix0 = i
+			}
+			if xsorted[l-1-i] <= xsorted[ix2] && xsorted[l-1-i] >= x && xsorted[l-1-i] > xsorted[ix0] {
+				ix2 = l - 1 - i
+			}
+		}
+		ix1 := ix0
+		for ix1 < l && xsorted[ix1] == xsorted[ix0] {
+			ix1++
+		}
+		ix3 := ix2
+		for ix3 < l && xsorted[ix3] == xsorted[ix2] {
+			ix3++
+		}
+		x2 := xsorted[ix2]
+		for ix2 > 1 && xsorted[ix2-1] == x2 {
+			ix2--
+		}
+		zxlow := Interp1d(ysorted[ix0:ix1], zsorted[ix0:ix1])(y)
+		zxhi := Interp1d(ysorted[ix2:ix3], zsorted[ix2:ix3])(y)
+		//fmt.Println("xlow", xsorted[ix0:ix1], "xhi", xsorted[ix2:ix3], "yxlow", ysorted[ix0:ix1], "yxhi", ysorted[ix2:ix3], "zxlow", zsorted[ix0:ix1], zxlow, "zxhi", zsorted[ix2:ix3], zxhi)
+		return Interp1d([]float64{xsorted[ix0], xsorted[ix2]}, []float64{zxlow, zxhi})(x)
 	}
-}
-
-// PersonAsIface creates a new person as a PersIface interface
-func PersonAsIface(name string, age int) PersIface {
-	return &Person{
-		Name: name,
-		Age:  age,
-	}
-}
-
-// NewPersonWithAge creates a new Person with a specific age
-func NewPersonWithAge(age int) *Person {
-	return &Person{
-		Name: "stranger",
-		Age:  age,
-	}
-}
-
-// NewActivePerson creates a new Person with a certain amount of work done.
-func NewActivePerson(h int) (*Person, error) {
-	p := &Person{}
-	err := p.Work(h)
-	return p, err
-}
-
-func (p Person) String() string {
-	return fmt.Sprintf("hi.Person{Name=%q, Age=%d}", p.Name, p.Age)
-}
-
-// Greet sends greetings
-func (p *Person) Greet() string {
-	return p.greet()
-}
-
-// greet sends greetings
-func (p *Person) greet() string {
-	return fmt.Sprintf("Hello, I am %s", p.Name)
-}
-
-// Work makes a Person go to work for h hours
-func (p *Person) Work(h int) error {
-	cpkg.Printf("working...\n")
-	if h > 7 {
-		return fmt.Errorf("can't work for %d hours!", h)
-	}
-	cpkg.Printf("worked for %d hours\n", h)
-	return nil
-}
-
-// Salary returns the expected gains after h hours of work
-func (p *Person) Salary(h int) (int, error) {
-	if h > 7 {
-		return 0, fmt.Errorf("can't work for %d hours!", h)
-	}
-	return h * 10, nil
-}
-
-func (p *Person) GetName() string {
-	return p.Name
-}
-
-func (p *Person) GetAge() int {
-	return p.Age
-}
-
-func (p *Person) SetName(n string) {
-	p.Name = n
-}
-
-func (p *Person) SetAge(age int) {
-	p.Age = age
-}
-
-func (p *Person) SetFmS2(s2 structs.S2) {
-	p.Age = s2.Public
-}
-
-func (p *Person) SetFmS2Ptr(s2 *structs.S2) {
-	p.Age = s2.Public
-}
-
-func (p *Person) ReturnS2Ptr() *structs.S2 {
-	s2 := &structs.S2{Public: p.Age}
-	return s2
-}
-
-// Couple is a pair of persons
-type Couple struct {
-	P1 Person
-	P2 Person
-}
-
-// NewCouple returns a new couple made of the p1 and p2 persons.
-func NewCouple(p1, p2 Person) Couple {
-	return Couple{
-		P1: p1,
-		P2: p2,
-	}
-}
-
-func (c *Couple) String() string {
-	return fmt.Sprintf("hi.Couple{P1=%v, P2=%v}", c.P1, c.P2)
-}
-
-// Float is a kind of float32
-type Float float32
-
-// Floats is a slice of floats
-type Floats []Float
-
-// Eval evals float64
-type Eval func(f float64) float64
-
-// PersIface is an interface into the person type.
-type PersIface interface {
-	// GetName returns the name of the person
-	GetName() string
-
-	// GetAge returns the age of the person
-	GetAge() int
-
-	// SetName sets name
-	SetName(n string)
-
-	// SetAge sets age
-	SetAge(age int)
-
-	// Greet sends greetings
-	Greet() string
 }
